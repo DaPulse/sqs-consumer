@@ -93,6 +93,7 @@ class Consumer extends events_1.EventEmitter {
         this.authenticationErrorTimeout = options.authenticationErrorTimeout || 10000;
         this.pollingWaitTimeMs = options.pollingWaitTimeMs || 0;
         this.msDelayOnEmptyBatchSize = options.msDelayOnEmptyBatchSize || 5;
+        this.inFlightMessages = 0;
         this.sqs =
             options.sqs ||
                 new SQS({
@@ -143,11 +144,17 @@ class Consumer extends events_1.EventEmitter {
         catch (err) {
             this.emitError(err, message);
         }
+        this.inFlightMessages--;
+        if (this.stopped && this.inFlightMessages === 0) {
+            debug('Consumer is stopped and last in-flight message has been processed');
+            this.emit('stopped', this.queueUrl);
+        }
     }
     reportNumberOfMessagesReceived(numberOfMessages) {
         debug('Reducing number of messages received from freeConcurrentSlots');
         this.freeConcurrentSlots = this.freeConcurrentSlots - numberOfMessages;
         this.reportConcurrencyUsage(this.freeConcurrentSlots);
+        this.inFlightMessages += numberOfMessages;
     }
     async handleSqsResponse(response) {
         debug('Received SQS response');
@@ -267,7 +274,18 @@ class Consumer extends events_1.EventEmitter {
     }
     poll() {
         if (this.stopped) {
-            this.emit('stopped', this.queueUrl);
+            if (this.inFlightMessages < 0) {
+                debug('Consumer is stopped and there are negative in-flight messages');
+                const err = new Error('Negative in-flight messages');
+                this.emitError(err, null);
+            }
+            else if (this.inFlightMessages === 0) {
+                debug('Consumer is stopped and there are no in-flight messages');
+                this.emit('stopped', this.queueUrl);
+            }
+            else {
+                debug('Consumer is stopped and there are in-flight messages');
+            }
             return;
         }
         const pollBatchSize = Math.min(this.batchSize, this.freeConcurrentSlots);

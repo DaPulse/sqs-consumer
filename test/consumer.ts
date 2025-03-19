@@ -134,7 +134,7 @@ describe('Consumer', () => {
 
       consumer.start();
 
-      const err = await pEvent(consumer, 'error');
+      const err = await pEvent(consumer, 'unhandled_error');
 
       consumer.stop();
       assert.ok(err);
@@ -153,7 +153,7 @@ describe('Consumer', () => {
       sqs.receiveMessage = stubReject(receiveErr);
 
       consumer.start();
-      const err = await pEvent(consumer, 'error');
+      const err = await pEvent(consumer, 'unhandled_error');
       consumer.stop();
 
       assert.ok(err);
@@ -264,7 +264,7 @@ describe('Consumer', () => {
           resolve();
         });
 
-        consumer.on('error', errorListener);
+        consumer.on('unhandled_error', errorListener);
         consumer.start();
       });
     });
@@ -287,7 +287,7 @@ describe('Consumer', () => {
           resolve();
         });
 
-        consumer.on('error', errorListener);
+        consumer.on('unhandled_error', errorListener);
         consumer.start();
       });
     });
@@ -310,7 +310,7 @@ describe('Consumer', () => {
           resolve();
         });
 
-        consumer.on('error', errorListener);
+        consumer.on('unhandled_error', errorListener);
         consumer.start();
       });
     });

@@ -96,8 +96,8 @@ export interface ConsumerOptions {
   attributeNames?: string[];
   messageAttributeNames?: string[];
   stopped?: boolean;
-  concurrencyLimit?: number;
-  batchSize?: number;
+  concurrencyLimit?: number; // must be at least 1 even when not used, only really used with handleMessageBatch
+  batchSize?: number; // must be at least 1
   visibilityTimeout?: number;
   waitTimeSeconds?: number;
   authenticationErrorTimeout?: number;
@@ -106,9 +106,9 @@ export interface ConsumerOptions {
   terminateVisibilityTimeout?: boolean;
   sqs?: SQS;
   region?: string;
-  handleMessageTimeout?: number;
-  handleMessage?(message: SQSMessage): Promise<void>;
-  handleMessageBatch?(messages: SQSMessage[], consumer: Consumer): Promise<void>;
+  handleMessageTimeout?: number; // only used with handleMessage
+  handleMessage?(message: SQSMessage): Promise<void>; // function that we await on before the next poll, messages collected in the same batch may be processed concurrently
+  handleMessageBatch?(messages: SQSMessage[], consumer: Consumer): Promise<void>; // function that we DO NOT await on before the next poll, can be called in parallel if concurrencyLimit is greater than 1
   pollingStartedInstrumentCallback?(eventData: object): void;
   pollingFinishedInstrumentCallback?(eventData: object): void;
   batchStartedInstrumentCallBack?(eventData: object): void;
@@ -138,6 +138,7 @@ export class Consumer extends EventEmitter {
   private pollingWaitTimeMs: number;
   private msDelayOnEmptyBatchSize: number;
   private terminateVisibilityTimeout: boolean;
+  private inFlightMessages: number; // only used with handleMessageBatch
   private sqs: SQS;
 
   constructor(options: ConsumerOptions) {
@@ -164,6 +165,7 @@ export class Consumer extends EventEmitter {
     this.authenticationErrorTimeout = options.authenticationErrorTimeout || 10000;
     this.pollingWaitTimeMs = options.pollingWaitTimeMs || 0;
     this.msDelayOnEmptyBatchSize = options.msDelayOnEmptyBatchSize || 5;
+    this.inFlightMessages = 0;
 
     this.sqs =
       options.sqs ||
@@ -226,12 +228,19 @@ export class Consumer extends EventEmitter {
     } catch (err) {
       this.emitError(err, message);
     }
+
+    this.inFlightMessages--;
+    if (this.stopped && this.inFlightMessages === 0) {
+      debug('Consumer is stopped and last in-flight message has been processed');
+      this.emit('stopped', this.queueUrl);
+    }
   }
 
   private reportNumberOfMessagesReceived(numberOfMessages: number): void {
     debug('Reducing number of messages received from freeConcurrentSlots');
     this.freeConcurrentSlots = this.freeConcurrentSlots - numberOfMessages;
     this.reportConcurrencyUsage(this.freeConcurrentSlots);
+    this.inFlightMessages += numberOfMessages;
   }
 
   private async handleSqsResponse(response: ReceieveMessageResponse): Promise<void> {
@@ -354,7 +363,16 @@ export class Consumer extends EventEmitter {
 
   private poll(): void {
     if (this.stopped) {
-      this.emit('stopped', this.queueUrl);
+      if (this.inFlightMessages < 0) {
+        debug('Consumer is stopped and there are negative in-flight messages');
+        const err = new Error('Negative in-flight messages');
+        this.emitError(err, null);
+      } else if (this.inFlightMessages === 0) {
+        debug('Consumer is stopped and there are no in-flight messages');
+        this.emit('stopped', this.queueUrl);
+      } else {
+        debug('Consumer is stopped and there are in-flight messages');
+      }
       return;
     }
 
