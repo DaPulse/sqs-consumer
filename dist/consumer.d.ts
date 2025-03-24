@@ -47,6 +47,7 @@ export declare class Consumer extends EventEmitter {
     private pollingWaitTimeMs;
     private msDelayOnEmptyBatchSize;
     private terminateVisibilityTimeout;
+    private inFlightMessages;
     private sqs;
     constructor(options: ConsumerOptions);
     readonly isRunning: boolean;
