@@ -1,26 +1,20 @@
-class SQSError extends Error {
-  code: string;
-  statusCode: number;
-  region: string;
-  hostname: string;
-  time: Date;
-  retryable: boolean;
+export class SQSError extends Error {
+  code: string = '';
+  statusCode: number = 500;
+  region: string = '';
+  hostname: string = '';
+  time: Date = new Date();
+  retryable: boolean = false;
 
   constructor(message: string) {
     super(message);
-    this.name = this.constructor.name;
+    this.name = 'SQSError';
   }
 }
 
-class TimeoutError extends Error {
-  constructor(message: string = 'Operation timed out.') {
-    super(message);
-    this.message = message;
+export class TimeoutError extends Error {
+  constructor(message?: string) {
+    super(message || 'Operation timed out');
     this.name = 'TimeoutError';
   }
 }
-
-export {
-  SQSError,
-  TimeoutError
-};
