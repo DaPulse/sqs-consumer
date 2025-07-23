@@ -1,4 +1,5 @@
-import { AWSError } from 'aws-sdk';
+import { ServiceException } from '@smithy/smithy-client';
+import { Message, ReceiveMessageCommandInput, ReceiveMessageCommandOutput, SQS } from '@aws-sdk/client-sqs';
 import * as SQS from 'aws-sdk/clients/sqs';
 import { PromiseResult } from 'aws-sdk/lib/request';
 import * as Debug from 'debug';
@@ -9,9 +10,9 @@ import { SQSError, TimeoutError } from './errors';
 
 const debug = Debug('sqs-consumer');
 
-type ReceieveMessageResponse = PromiseResult<SQS.Types.ReceiveMessageResult, AWSError>;
-type SQSMessage = SQS.Types.Message;
-type ReceiveMessageRequest = SQS.Types.ReceiveMessageRequest;
+type ReceieveMessageResponse = PromiseResult<ReceiveMessageCommandOutput, ServiceException>;
+type SQSMessage = Message;
+type ReceiveMessageRequest = ReceiveMessageCommandInput;
 
 const requiredOptions = [
   'queueUrl',
@@ -66,7 +67,7 @@ function isNonExistentQueueError(err: Error): Boolean {
   return false;
 }
 
-function toSQSError(err: AWSError, message: string): SQSError {
+function toSQSError(err: ServiceException, message: string): SQSError {
   const sqsError = new SQSError(message);
   sqsError.code = err.code;
   sqsError.statusCode = err.statusCode;
@@ -297,7 +298,9 @@ export class Consumer extends EventEmitter {
 
   private async receiveMessage(params: ReceiveMessageRequest): Promise<ReceieveMessageResponse> {
     try {
-      return await this.sqs.receiveMessage(params).promise();
+      return await // The `.promise()` call might be on an JS SDK v2 client API.
+      // If yes, please remove .promise(). If not, remove this comment.
+      this.await sqs.send(new ReceiveMessageCommand(params)).promise();
     } catch (err) {
       throw toSQSError(err, `SQS receive message failed: ${err.message}`);
     }
@@ -312,7 +315,9 @@ export class Consumer extends EventEmitter {
     };
 
     try {
-      await this.sqs.deleteMessage(deleteParams).promise();
+      await // The `.promise()` call might be on an JS SDK v2 client API.
+      // If yes, please remove .promise(). If not, remove this comment.
+      this.sqs.deleteMessage(deleteParams).promise();
     } catch (err) {
       throw toSQSError(err, `SQS delete message failed: ${err.message}`);
     }
@@ -341,14 +346,18 @@ export class Consumer extends EventEmitter {
     }
   }
 
-  private async terminateVisabilityTimeout(message: SQSMessage): Promise<PromiseResult<any, AWSError>> {
-    return this.sqs
-      .changeMessageVisibility({
-        QueueUrl: this.queueUrl,
-        ReceiptHandle: message.ReceiptHandle,
-        VisibilityTimeout: 0,
-      })
-      .promise();
+  private async terminateVisabilityTimeout(message: SQSMessage): Promise<PromiseResult<any, ServiceException>> {
+    return (
+      // The `.promise()` call might be on an JS SDK v2 client API.
+      // If yes, please remove .promise(). If not, remove this comment.
+      this.sqs
+        .changeMessageVisibility({
+          QueueUrl: this.queueUrl,
+          ReceiptHandle: message.ReceiptHandle,
+          VisibilityTimeout: 0,
+        })
+        .promise()
+    );
   }
 
   private emitError(err: Error, message: SQSMessage): void {
@@ -400,7 +409,7 @@ export class Consumer extends EventEmitter {
         VisibilityTimeout: this.visibilityTimeout,
       };
 
-      this.receiveMessage(receiveParams)
+      await this.send(new ReceiveMessageCommand(receiveParams))
         .then(this.handleSqsResponse)
         .catch((err) => {
           this.emit('unhandled_error', err, this.queueUrl);

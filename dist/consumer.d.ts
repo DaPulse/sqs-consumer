@@ -1,6 +1,7 @@
 import * as SQS from 'aws-sdk/clients/sqs';
+import { Message, SQS } from '@aws-sdk/client-sqs';
 import { EventEmitter } from 'events';
-declare type SQSMessage = SQS.Types.Message;
+declare type SQSMessage = Message;
 export interface ConsumerOptions {
     queueUrl?: string;
     attributeNames?: string[];
