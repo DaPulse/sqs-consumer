@@ -1,1 +1,1 @@
-export declare function autoBind(obj: object): void;
+export declare function autoBind(obj: Record<string, any>): void;

@@ -1,4 +1,4 @@
-declare class SQSError extends Error {
+export declare class SQSError extends Error {
     code: string;
     statusCode: number;
     region: string;
@@ -7,7 +7,6 @@ declare class SQSError extends Error {
     retryable: boolean;
     constructor(message: string);
 }
-declare class TimeoutError extends Error {
+export declare class TimeoutError extends Error {
     constructor(message?: string);
 }
-export { SQSError, TimeoutError };

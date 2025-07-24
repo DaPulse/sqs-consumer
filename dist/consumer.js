@@ -1,12 +1,39 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-const SQS = require("aws-sdk/clients/sqs");
-const Debug = require("debug");
-const crypto = require("crypto");
+exports.Consumer = void 0;
+const client_sqs_1 = require("@aws-sdk/client-sqs");
+const debug_1 = __importDefault(require("debug"));
+const crypto = __importStar(require("crypto"));
 const events_1 = require("events");
 const bind_1 = require("./bind");
 const errors_1 = require("./errors");
-const debug = Debug('sqs-consumer');
+const debug = (0, debug_1.default)('sqs-consumer');
 const requiredOptions = [
     'queueUrl',
     // only one of handleMessage / handleMessagesBatch is required
@@ -22,7 +49,7 @@ function createTimeout(duration) {
             reject(new errors_1.TimeoutError());
         }, duration);
     });
-    return [timeout, pending];
+    return { timeout: timeout, pending };
 }
 function assertOptions(options) {
     requiredOptions.forEach((option) => {
@@ -31,7 +58,7 @@ function assertOptions(options) {
             throw new Error(`Missing SQS consumer option [ ${possibilities.join(' or ')} ].`);
         }
     });
-    if (options.batchSize > 10 || options.batchSize < 1) {
+    if (options.batchSize && (options.batchSize > 10 || options.batchSize < 1)) {
         throw new Error('SQS batchSize option must be between 1 and 10.');
     }
 }
@@ -48,17 +75,18 @@ function isNonExistentQueueError(err) {
     return false;
 }
 function toSQSError(err, message) {
+    var _a, _b, _c, _d;
     const sqsError = new errors_1.SQSError(message);
-    sqsError.code = err.code;
-    sqsError.statusCode = err.statusCode;
-    sqsError.region = err.region;
-    sqsError.retryable = err.retryable;
-    sqsError.hostname = err.hostname;
-    sqsError.time = err.time;
+    sqsError.code = err.name || 'UnknownError';
+    sqsError.statusCode = ((_a = err.$metadata) === null || _a === void 0 ? void 0 : _a.httpStatusCode) || 500;
+    sqsError.region = ((_b = err.$metadata) === null || _b === void 0 ? void 0 : _b.cfId) || '';
+    sqsError.retryable = ((_c = err.$retryable) === null || _c === void 0 ? void 0 : _c.throttling) || false;
+    sqsError.hostname = ((_d = err.$metadata) === null || _d === void 0 ? void 0 : _d.extendedRequestId) || '';
+    sqsError.time = new Date();
     return sqsError;
 }
 function hasMessages(response) {
-    return response.Messages && response.Messages.length > 0;
+    return !!(response.Messages && response.Messages.length > 0);
 }
 function addMessageUuidToError(error, message) {
     try {
@@ -73,21 +101,21 @@ class Consumer extends events_1.EventEmitter {
         super();
         assertOptions(options);
         this.queueUrl = options.queueUrl;
-        this.handleMessage = options.handleMessage;
+        this.handleMessage = options.handleMessage || (async () => { });
         this.handleMessageBatch = options.handleMessageBatch;
         this.pollingStartedInstrumentCallback = options.pollingStartedInstrumentCallback;
         this.pollingFinishedInstrumentCallback = options.pollingFinishedInstrumentCallback;
         this.batchStartedInstrumentCallBack = options.batchStartedInstrumentCallBack;
         this.batchFinishedInstrumentCallBack = options.batchFinishedInstrumentCallBack;
         this.batchFailedInstrumentCallBack = options.batchFailedInstrumentCallBack;
-        this.handleMessageTimeout = options.handleMessageTimeout;
+        this.handleMessageTimeout = options.handleMessageTimeout || 0;
         this.attributeNames = options.attributeNames || [];
         this.messageAttributeNames = options.messageAttributeNames || [];
         this.stopped = true;
         this.batchSize = options.batchSize || 1;
         this.concurrencyLimit = options.concurrencyLimit || 30;
         this.freeConcurrentSlots = this.concurrencyLimit;
-        this.visibilityTimeout = options.visibilityTimeout;
+        this.visibilityTimeout = options.visibilityTimeout || 0;
         this.terminateVisibilityTimeout = options.terminateVisibilityTimeout || false;
         this.waitTimeSeconds = options.waitTimeSeconds || 20;
         this.authenticationErrorTimeout = options.authenticationErrorTimeout || 10000;
@@ -96,10 +124,10 @@ class Consumer extends events_1.EventEmitter {
         this.inFlightMessages = 0;
         this.sqs =
             options.sqs ||
-                new SQS({
+                new client_sqs_1.SQS({
                     region: options.region || process.env.AWS_REGION || 'eu-west-1',
                 });
-        bind_1.autoBind(this);
+        (0, bind_1.autoBind)(this);
     }
     get isRunning() {
         return !this.stopped;
@@ -160,7 +188,7 @@ class Consumer extends events_1.EventEmitter {
         debug('Received SQS response');
         debug(response);
         const hasResponseWithMessages = !!response && hasMessages(response);
-        const numberOfMessages = hasResponseWithMessages ? response.Messages.length : 0;
+        const numberOfMessages = hasResponseWithMessages && response.Messages ? response.Messages.length : 0;
         if (this.pollingFinishedInstrumentCallback) {
             // instrument pod how many messages received
             this.pollingFinishedInstrumentCallback({
@@ -171,8 +199,8 @@ class Consumer extends events_1.EventEmitter {
             });
         }
         if (response) {
-            if (hasMessages(response)) {
-                if (this.handleMessageBatch) {
+            if (hasMessages(response) && response.Messages) {
+                if (this.handleMessageBatch !== undefined) {
                     // prefer handling messages in batch when available
                     await this.processMessageBatch(response.Messages);
                 }
@@ -205,14 +233,6 @@ class Consumer extends events_1.EventEmitter {
             }
         }
     }
-    async receiveMessage(params) {
-        try {
-            return await this.sqs.receiveMessage(params).promise();
-        }
-        catch (err) {
-            throw toSQSError(err, `SQS receive message failed: ${err.message}`);
-        }
-    }
     async deleteMessage(message) {
         debug('Deleting message %s', message.MessageId);
         const deleteParams = {
@@ -220,19 +240,18 @@ class Consumer extends events_1.EventEmitter {
             ReceiptHandle: message.ReceiptHandle,
         };
         try {
-            await this.sqs.deleteMessage(deleteParams).promise();
+            await this.sqs.send(new client_sqs_1.DeleteMessageCommand(deleteParams));
         }
         catch (err) {
             throw toSQSError(err, `SQS delete message failed: ${err.message}`);
         }
     }
     async executeHandler(message) {
-        let timeout;
-        let pending;
+        let timeoutResponse;
         try {
             if (this.handleMessageTimeout) {
-                [timeout, pending] = createTimeout(this.handleMessageTimeout);
-                await Promise.race([this.handleMessage(message), pending]);
+                timeoutResponse = createTimeout(this.handleMessageTimeout);
+                await Promise.race([this.handleMessage(message), timeoutResponse.pending]);
             }
             else {
                 await this.handleMessage(message);
@@ -249,17 +268,17 @@ class Consumer extends events_1.EventEmitter {
             throw err;
         }
         finally {
-            clearTimeout(timeout);
+            if (timeoutResponse) {
+                clearTimeout(timeoutResponse.timeout);
+            }
         }
     }
     async terminateVisabilityTimeout(message) {
-        return this.sqs
-            .changeMessageVisibility({
+        return this.sqs.send(new client_sqs_1.ChangeMessageVisibilityCommand({
             QueueUrl: this.queueUrl,
             ReceiptHandle: message.ReceiptHandle,
             VisibilityTimeout: 0,
-        })
-            .promise();
+        }));
     }
     emitError(err, message) {
         if (err.name === errors_1.SQSError.name) {
@@ -272,12 +291,12 @@ class Consumer extends events_1.EventEmitter {
             this.emit('processing_error', err, message, this.queueUrl);
         }
     }
-    poll() {
+    async poll() {
         if (this.stopped) {
             if (this.inFlightMessages < 0) {
                 debug('Consumer is stopped and there are negative in-flight messages');
                 const err = new Error('Negative in-flight messages');
-                this.emitError(err, null);
+                this.emitError(err, {});
             }
             else if (this.inFlightMessages === 0) {
                 debug('Consumer is stopped and there are no in-flight messages');
@@ -308,7 +327,7 @@ class Consumer extends events_1.EventEmitter {
                 WaitTimeSeconds: this.waitTimeSeconds,
                 VisibilityTimeout: this.visibilityTimeout,
             };
-            this.receiveMessage(receiveParams)
+            this.sqs.send(new client_sqs_1.ReceiveMessageCommand(receiveParams))
                 .then(this.handleSqsResponse)
                 .catch((err) => {
                 this.emit('unhandled_error', err, this.queueUrl);

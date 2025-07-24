@@ -1,10 +1,10 @@
-import * as SQS from 'aws-sdk/clients/sqs';
-import { Message, SQS } from '@aws-sdk/client-sqs';
+/// <reference types="node" />
+import { Message, SQS, QueueAttributeName } from '@aws-sdk/client-sqs';
 import { EventEmitter } from 'events';
-declare type SQSMessage = Message;
+type SQSMessage = Message;
 export interface ConsumerOptions {
     queueUrl?: string;
-    attributeNames?: string[];
+    attributeNames?: QueueAttributeName[];
     messageAttributeNames?: string[];
     stopped?: boolean;
     concurrencyLimit?: number;
@@ -29,7 +29,7 @@ export interface ConsumerOptions {
 export declare class Consumer extends EventEmitter {
     private queueUrl;
     private handleMessage;
-    private handleMessageBatch;
+    private handleMessageBatch?;
     private pollingStartedInstrumentCallback?;
     private pollingFinishedInstrumentCallback?;
     private batchStartedInstrumentCallBack?;
@@ -51,7 +51,7 @@ export declare class Consumer extends EventEmitter {
     private inFlightMessages;
     private sqs;
     constructor(options: ConsumerOptions);
-    readonly isRunning: boolean;
+    get isRunning(): boolean;
     static create(options: ConsumerOptions): Consumer;
     start(): void;
     stop(): void;
@@ -62,7 +62,6 @@ export declare class Consumer extends EventEmitter {
     private reportNumberOfMessagesReceived;
     private handleSqsResponse;
     private processMessage;
-    private receiveMessage;
     private deleteMessage;
     private executeHandler;
     private terminateVisabilityTimeout;
