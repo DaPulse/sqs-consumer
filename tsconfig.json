@@ -1,13 +1,18 @@
 {
   "compilerOptions": {
-    "target": "es2017",
+    "target": "es2018",
     "module": "commonjs",
+    "lib": ["es2018"],
     "outDir": "dist",
     "sourceMap": false,
     "moduleResolution": "node",
     "allowJs": false,
     "noUnusedLocals": true,
-    "declaration": true
+    "declaration": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
   },
   "include": [
     "src/**/*"

@@ -1,7 +1,14 @@
-import { AWSError } from 'aws-sdk';
-import * as SQS from 'aws-sdk/clients/sqs';
-import { PromiseResult } from 'aws-sdk/lib/request';
-import * as Debug from 'debug';
+import { ServiceException } from '@smithy/smithy-client';
+import { 
+  Message, 
+  ReceiveMessageCommandOutput, 
+  SQS, 
+  ReceiveMessageCommand,
+  DeleteMessageCommand,
+  ChangeMessageVisibilityCommand,
+  QueueAttributeName
+} from '@aws-sdk/client-sqs';
+import Debug from 'debug';
 import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
 import { autoBind } from './bind';
@@ -9,9 +16,8 @@ import { SQSError, TimeoutError } from './errors';
 
 const debug = Debug('sqs-consumer');
 
-type ReceieveMessageResponse = PromiseResult<SQS.Types.ReceiveMessageResult, AWSError>;
-type SQSMessage = SQS.Types.Message;
-type ReceiveMessageRequest = SQS.Types.ReceiveMessageRequest;
+type ReceieveMessageResponse = ReceiveMessageCommandOutput;
+type SQSMessage = Message;
 
 const requiredOptions = [
   'queueUrl',
@@ -28,37 +34,37 @@ function generateUuid(): string {
   return crypto.randomBytes(16).toString('hex');
 }
 
-function createTimeout(duration: number): TimeoutResponse[] {
-  let timeout;
-  const pending = new Promise((_, reject) => {
+function createTimeout(duration: number): TimeoutResponse {
+  let timeout: NodeJS.Timeout | undefined;
+  const pending = new Promise<void>((_, reject) => {
     timeout = setTimeout((): void => {
       reject(new TimeoutError());
     }, duration);
   });
-  return [timeout, pending];
+  return { timeout: timeout!, pending };
 }
 
 function assertOptions(options: ConsumerOptions): void {
   requiredOptions.forEach((option) => {
     const possibilities = option.split('|');
-    if (!possibilities.find((p) => options[p])) {
+    if (!possibilities.find((p) => (options as any)[p])) {
       throw new Error(`Missing SQS consumer option [ ${possibilities.join(' or ')} ].`);
     }
   });
 
-  if (options.batchSize > 10 || options.batchSize < 1) {
+  if (options.batchSize && (options.batchSize > 10 || options.batchSize < 1)) {
     throw new Error('SQS batchSize option must be between 1 and 10.');
   }
 }
 
-function isConnectionError(err: Error): Boolean {
+function isConnectionError(err: Error): boolean {
   if (err instanceof SQSError) {
     return err.statusCode === 403 || err.code === 'CredentialsError' || err.code === 'UnknownEndpoint';
   }
   return false;
 }
 
-function isNonExistentQueueError(err: Error): Boolean {
+function isNonExistentQueueError(err: Error): boolean {
   if (err instanceof SQSError) {
     return err.code === 'AWS.SimpleQueueService.NonExistentQueue';
   }
@@ -66,23 +72,23 @@ function isNonExistentQueueError(err: Error): Boolean {
   return false;
 }
 
-function toSQSError(err: AWSError, message: string): SQSError {
+function toSQSError(err: ServiceException, message: string): SQSError {
   const sqsError = new SQSError(message);
-  sqsError.code = err.code;
-  sqsError.statusCode = err.statusCode;
-  sqsError.region = err.region;
-  sqsError.retryable = err.retryable;
-  sqsError.hostname = err.hostname;
-  sqsError.time = err.time;
+  sqsError.code = err.name || 'UnknownError';
+  sqsError.statusCode = err.$metadata?.httpStatusCode || 500;
+  sqsError.region = err.$metadata?.cfId || '';
+  sqsError.retryable = err.$retryable?.throttling || false;
+  sqsError.hostname = err.$metadata?.extendedRequestId || '';
+  sqsError.time = new Date();
 
   return sqsError;
 }
 
 function hasMessages(response: ReceieveMessageResponse): boolean {
-  return response.Messages && response.Messages.length > 0;
+  return !!(response.Messages && response.Messages.length > 0);
 }
 
-function addMessageUuidToError(error, message): void {
+function addMessageUuidToError(error: any, message: any): void {
   try {
     const messageBody = JSON.parse(message.Body);
     const messageUuid = messageBody && messageBody.payload && messageBody.payload.uuid;
@@ -93,7 +99,7 @@ function addMessageUuidToError(error, message): void {
 
 export interface ConsumerOptions {
   queueUrl?: string;
-  attributeNames?: string[];
+  attributeNames?: QueueAttributeName[];
   messageAttributeNames?: string[];
   stopped?: boolean;
   concurrencyLimit?: number; // must be at least 1 even when not used, only really used with handleMessageBatch
@@ -119,14 +125,14 @@ export interface ConsumerOptions {
 export class Consumer extends EventEmitter {
   private queueUrl: string;
   private handleMessage: (message: SQSMessage) => Promise<void>;
-  private handleMessageBatch: (message: SQSMessage[], consumer: Consumer) => Promise<void>;
+  private handleMessageBatch?: (message: SQSMessage[], consumer: Consumer) => Promise<void>;
   private pollingStartedInstrumentCallback?: (eventData: object) => void;
   private pollingFinishedInstrumentCallback?: (eventData: object) => void;
   private batchStartedInstrumentCallBack?: (eventData: object) => void;
   private batchFinishedInstrumentCallBack?: (eventData: object) => void;
   private batchFailedInstrumentCallBack?: (eventData: object) => void;
   private handleMessageTimeout: number;
-  private attributeNames: string[];
+  private attributeNames: QueueAttributeName[];
   private messageAttributeNames: string[];
   private stopped: boolean;
   private concurrencyLimit: number;
@@ -144,22 +150,22 @@ export class Consumer extends EventEmitter {
   constructor(options: ConsumerOptions) {
     super();
     assertOptions(options);
-    this.queueUrl = options.queueUrl;
-    this.handleMessage = options.handleMessage;
+    this.queueUrl = options.queueUrl!;
+    this.handleMessage = options.handleMessage || (async () => {});
     this.handleMessageBatch = options.handleMessageBatch;
     this.pollingStartedInstrumentCallback = options.pollingStartedInstrumentCallback;
     this.pollingFinishedInstrumentCallback = options.pollingFinishedInstrumentCallback;
     this.batchStartedInstrumentCallBack = options.batchStartedInstrumentCallBack;
     this.batchFinishedInstrumentCallBack = options.batchFinishedInstrumentCallBack;
     this.batchFailedInstrumentCallBack = options.batchFailedInstrumentCallBack;
-    this.handleMessageTimeout = options.handleMessageTimeout;
+    this.handleMessageTimeout = options.handleMessageTimeout || 0;
     this.attributeNames = options.attributeNames || [];
     this.messageAttributeNames = options.messageAttributeNames || [];
     this.stopped = true;
     this.batchSize = options.batchSize || 1;
     this.concurrencyLimit = options.concurrencyLimit || 30;
     this.freeConcurrentSlots = this.concurrencyLimit;
-    this.visibilityTimeout = options.visibilityTimeout;
+    this.visibilityTimeout = options.visibilityTimeout || 0;
     this.terminateVisibilityTimeout = options.terminateVisibilityTimeout || false;
     this.waitTimeSeconds = options.waitTimeSeconds || 20;
     this.authenticationErrorTimeout = options.authenticationErrorTimeout || 10000;
@@ -226,7 +232,7 @@ export class Consumer extends EventEmitter {
       await this.deleteMessage(message);
       this.emit('message_processed', message, this.queueUrl);
     } catch (err) {
-      this.emitError(err, message);
+      this.emitError(err as Error, message);
     }
 
     this.inFlightMessages--;
@@ -248,7 +254,7 @@ export class Consumer extends EventEmitter {
     debug(response);
 
     const hasResponseWithMessages = !!response && hasMessages(response);
-    const numberOfMessages = hasResponseWithMessages ? response.Messages.length : 0;
+    const numberOfMessages = hasResponseWithMessages && response.Messages ? response.Messages.length : 0;
 
     if (this.pollingFinishedInstrumentCallback) {
       // instrument pod how many messages received
@@ -261,8 +267,8 @@ export class Consumer extends EventEmitter {
     }
 
     if (response) {
-      if (hasMessages(response)) {
-        if (this.handleMessageBatch) {
+      if (hasMessages(response) && response.Messages) {
+        if (this.handleMessageBatch !== undefined) {
           // prefer handling messages in batch when available
           await this.processMessageBatch(response.Messages);
         } else {
@@ -283,7 +289,7 @@ export class Consumer extends EventEmitter {
       await this.deleteMessage(message);
       this.emit('message_processed', message, this.queueUrl);
     } catch (err) {
-      this.emitError(err, message);
+      this.emitError(err as Error, message);
 
       if (this.terminateVisibilityTimeout) {
         try {
@@ -292,14 +298,6 @@ export class Consumer extends EventEmitter {
           this.emit('error', err, message, this.queueUrl);
         }
       }
-    }
-  }
-
-  private async receiveMessage(params: ReceiveMessageRequest): Promise<ReceieveMessageResponse> {
-    try {
-      return await this.sqs.receiveMessage(params).promise();
-    } catch (err) {
-      throw toSQSError(err, `SQS receive message failed: ${err.message}`);
     }
   }
 
@@ -312,43 +310,42 @@ export class Consumer extends EventEmitter {
     };
 
     try {
-      await this.sqs.deleteMessage(deleteParams).promise();
+      await this.sqs.send(new DeleteMessageCommand(deleteParams));
     } catch (err) {
-      throw toSQSError(err, `SQS delete message failed: ${err.message}`);
+      throw toSQSError(err as ServiceException, `SQS delete message failed: ${(err as Error).message}`);
     }
   }
 
   private async executeHandler(message: SQSMessage): Promise<void> {
-    let timeout;
-    let pending;
+    let timeoutResponse: TimeoutResponse | undefined;
     try {
       if (this.handleMessageTimeout) {
-        [timeout, pending] = createTimeout(this.handleMessageTimeout);
-        await Promise.race([this.handleMessage(message), pending]);
+        timeoutResponse = createTimeout(this.handleMessageTimeout);
+        await Promise.race([this.handleMessage(message), timeoutResponse.pending]);
       } else {
         await this.handleMessage(message);
       }
     } catch (err) {
       addMessageUuidToError(err, message);
       if (err instanceof TimeoutError) {
-        err.message = `Message handler timed out after ${this.handleMessageTimeout}ms: Operation timed out.`;
+        (err as any).message = `Message handler timed out after ${this.handleMessageTimeout}ms: Operation timed out.`;
       } else {
-        err.message = `Unexpected message handler failure: ${err.message}`;
+        (err as any).message = `Unexpected message handler failure: ${(err as Error).message}`;
       }
       throw err;
     } finally {
-      clearTimeout(timeout);
+      if (timeoutResponse) {
+        clearTimeout(timeoutResponse.timeout);
+      }
     }
   }
 
-  private async terminateVisabilityTimeout(message: SQSMessage): Promise<PromiseResult<any, AWSError>> {
-    return this.sqs
-      .changeMessageVisibility({
-        QueueUrl: this.queueUrl,
-        ReceiptHandle: message.ReceiptHandle,
-        VisibilityTimeout: 0,
-      })
-      .promise();
+  private async terminateVisabilityTimeout(message: SQSMessage): Promise<any> {
+    return this.sqs.send(new ChangeMessageVisibilityCommand({
+      QueueUrl: this.queueUrl,
+      ReceiptHandle: message.ReceiptHandle,
+      VisibilityTimeout: 0,
+    }));
   }
 
   private emitError(err: Error, message: SQSMessage): void {
@@ -361,12 +358,12 @@ export class Consumer extends EventEmitter {
     }
   }
 
-  private poll(): void {
+  private async poll(): Promise<void> {
     if (this.stopped) {
       if (this.inFlightMessages < 0) {
         debug('Consumer is stopped and there are negative in-flight messages');
         const err = new Error('Negative in-flight messages');
-        this.emitError(err, null);
+        this.emitError(err, {} as SQSMessage);
       } else if (this.inFlightMessages === 0) {
         debug('Consumer is stopped and there are no in-flight messages');
         this.emit('stopped', this.queueUrl);
@@ -400,7 +397,7 @@ export class Consumer extends EventEmitter {
         VisibilityTimeout: this.visibilityTimeout,
       };
 
-      this.receiveMessage(receiveParams)
+      this.sqs.send(new ReceiveMessageCommand(receiveParams))
         .then(this.handleSqsResponse)
         .catch((err) => {
           this.emit('unhandled_error', err, this.queueUrl);
@@ -443,7 +440,7 @@ export class Consumer extends EventEmitter {
       });
     }
 
-    this.handleMessageBatch(messages, this)
+    this.handleMessageBatch!(messages, this)
       .then(() => {
         if (this.batchFinishedInstrumentCallBack) {
           this.batchFinishedInstrumentCallBack({
@@ -469,7 +466,7 @@ export class Consumer extends EventEmitter {
       });
   }
 
-  private reportConcurrencyUsage(currentFreeConcurrencySlots): void {
+  private reportConcurrencyUsage(currentFreeConcurrencySlots: number): void {
     this.emit('concurrency_usage_updated', currentFreeConcurrencySlots, this.concurrencyLimit, this.queueUrl);
   }
 }

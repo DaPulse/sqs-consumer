@@ -1,13 +1,11 @@
 'use strict';
 Object.defineProperty(exports, "__esModule", { value: true });
-function isMethod(propertyName, value) {
-    return propertyName !== 'constructor' && typeof value === 'function';
-}
+exports.autoBind = void 0;
 function autoBind(obj) {
     const propertyNames = Object.getOwnPropertyNames(obj.constructor.prototype);
     propertyNames.forEach((propertyName) => {
         const value = obj[propertyName];
-        if (isMethod(propertyName, value)) {
+        if (propertyName !== 'constructor' && typeof value === 'function') {
             obj[propertyName] = value.bind(obj);
         }
     });
