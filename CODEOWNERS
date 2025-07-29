@@ -1,2 +1,2 @@
 # Set @DaPulse/async-communication as default code owners of all files.
-* @DaPulse/async-communication
+* @DaPulse/app-level-infra @DaPulse/async-communication
